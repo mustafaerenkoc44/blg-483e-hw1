@@ -1,7 +1,5 @@
 # BLG 483E HW1: Stdlib-First Web Crawler
 
-![CI](https://github.com/mustafaerenkoc44/blg-483e-hw1/actions/workflows/python-tests.yml/badge.svg)
-
 This repository contains a single-machine web crawler and live search engine built primarily with Python standard library modules. The project was implemented for the BLG 483E Homework 1 assignment and focuses on correctness, scalability on one machine, controlled back pressure, and search visibility while indexing is still active.
 
 The crawler exposes the two required capabilities:
