@@ -1,0 +1,687 @@
+\documentclass[pdftex,12pt,a4paper]{article}
+
+% --- User's Original Preamble ---
+\usepackage{graphicx}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{breakcites}
+\usepackage{indentfirst}
+\usepackage{pgfgantt}
+\usepackage{pdflscape}
+\usepackage{float}
+\usepackage{epsfig}
+\usepackage{epstopdf}
+\usepackage[cmex10]{amsmath}
+\usepackage{stfloats}
+\usepackage{multirow}
+\usepackage{fancyvrb}
+\usepackage{mathtools}
+
+% --- Added Packages ---
+\usepackage{hyperref}
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue,
+    filecolor=magenta,
+    urlcolor=cyan,
+    pdftitle={BLG 483E Homework 1 Report},
+    pdfpagemode=FullScreen,
+}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+
+% --- User's Original Settings ---
+\renewcommand{\refname}{REFERENCES}
+\linespread{1.3}
+
+\begin{document}
+
+% --- Title Page ---
+\begin{titlepage}
+\begin{center}
+\textbf{}\\
+\textbf{\Large{ISTANBUL TECHNICAL UNIVERSITY}}\\
+\vspace{0.5cm}
+\textbf{\Large{COMPUTER ENGINEERING DEPARTMENT}}\\
+\vspace{4cm}
+\textbf{\Large{BLG 483E\\ AI AIDED COMPUTER ENGINEERING\\ HOMEWORK 1 REPORT}}\\
+\vspace{4cm}
+\begin{table}[ht]
+\centering
+\Large{
+\begin{tabular}{lcl}
+\textbf{CRN}  & : & 25311 \\
+\textbf{LECTURER}  & : & Dr. Yusuf Hüseyin Şahin \\
+\end{tabular}}
+\end{table}
+\vspace{2cm}
+\begin{table}[ht]
+\centering
+\Large{
+\textbf{\Large{Mustafa Eren KOÇ\\
+150190805}}\\
+\end{table}
+\vspace{2.8cm}
+\textbf{\Large{SPRING 2026}}
+
+\end{center}
+\thispagestyle{empty}
+\end{titlepage}
+
+% --- TOC Setup ---
+\thispagestyle{empty}
+\addtocontents{toc}{\contentsline {section}{\numberline {}FRONT COVER}{}}
+\addtocontents{toc}{\contentsline {section}{\numberline {}CONTENTS}{}}
+\setcounter{tocdepth}{4}
+\tableofcontents
+\clearpage
+
+% --- Main Content Start ---
+\setcounter{page}{1}
+\pagenumbering{arabic}
+
+\section{INTRODUCTION}
+
+This report presents the design, implementation, validation, and discussion of Homework 1 for BLG 483E AI Aided Computer Engineering. The assignment asks for a localhost-runnable web crawler that provides two major capabilities: an \texttt{index(origin, k)} operation for crawling the web up to depth \texttt{k}, and a \texttt{search(query)} operation that returns relevant results while indexing is still ongoing. In addition, the system must expose the state of the crawler in a user-facing UI or CLI, explicitly reflecting progress, queue depth, and some notion of back pressure. Persistence and resume support are optional but considered a strong plus.
+
+The solution developed for this homework is a single-machine crawler and search engine implemented primarily with Python standard-library components. The system deliberately avoids high-level crawler frameworks and instead relies on \texttt{urllib.request}, \texttt{html.parser}, \texttt{threading}, \texttt{queue.Queue}, \texttt{sqlite3}, and \texttt{http.server}. This choice directly aligns with the assignment requirement that language-native tools should be used ``to the greatest extent possible'' rather than external libraries that solve the core exercise out of the box.
+
+From an architectural perspective, the implemented system aims to balance correctness, clarity, and practical engineering judgment under a constrained project scope. The crawler is built as a persisted frontier plus in-memory worker queue design. Search is executed directly against a transactional SQLite index running in WAL mode, which allows the system to expose newly indexed pages immediately while crawl workers continue to discover more content. As a result, the implementation not only satisfies the functional requirements but also meaningfully addresses the assignment's explicit design prompt: how can search continue to operate while indexing is active?
+
+This report first restates the assignment requirements in engineering terms, then explains the system architecture, implementation details, concurrency and back-pressure strategy, persistence model, validation process, and final outcomes. It concludes with a discussion of design tradeoffs and recommendations for how the current localhost prototype could be evolved into a production-oriented crawler system.
+
+\section{ASSIGNMENT ANALYSIS}
+\label{sec:assignment_analysis}
+
+\subsection{Problem Restatement}
+
+The assignment defines two externally visible operations:
+
+\begin{itemize}
+    \item \textbf{Index}: Given an origin URL and a maximum depth \texttt{k}, start a web crawl such that no page is crawled twice. Depth is defined as the number of hops from the origin to the discovered page.
+    \item \textbf{Search}: Given a query string, return relevant results as triples of the form \texttt{(relevant\_url, origin\_url, depth)}.
+\end{itemize}
+
+Although the assignment states that for the exercise we may assume \texttt{index} is invoked before \texttt{search}, it also explicitly asks for design thoughts on supporting search while indexing is still active. Therefore, a purely offline batch-index-then-search design would be acceptable only in the narrowest interpretation of the first statement, but it would fail to engage with one of the most important architectural questions embedded in the prompt. For that reason, the implementation intentionally supports true incremental indexing and concurrent search visibility.
+
+\subsection{Explicit Technical Constraints}
+
+Several constraints materially shape the design:
+
+\begin{itemize}
+    \item The crawler should scale to a large crawl on a \textbf{single machine}.
+    \item The system must include \textbf{back pressure}, such as queue limits or rate limits.
+    \item The system should avoid \textbf{duplicate crawling}.
+    \item The implementation should prefer \textbf{native language facilities} over turnkey crawler libraries.
+    \item The system should provide a \textbf{simple UI or CLI}.
+    \item A resume-after-interruption capability is a \textbf{bonus}, not a hard requirement, but valuable.
+\end{itemize}
+
+\subsection{Design Implications}
+
+These constraints imply several concrete engineering decisions:
+
+\begin{itemize}
+    \item A single-machine architecture should prefer a durable local store rather than distributed infrastructure.
+    \item Search results should be committed incrementally, not only at the end of a crawl job.
+    \item The queue that represents work in flight should be bounded to avoid uncontrolled memory growth.
+    \item URL deduplication should persist beyond process memory if resume behavior is desired.
+    \item The system needs to expose runtime information that is meaningful to a reviewer, not just internal debug logs.
+\end{itemize}
+
+Taken together, the prompt is less about raw crawling volume and more about architectural sensibility: correctness under concurrency, bounded load, readable operational state, and a thoughtful tradeoff between simplicity and extensibility.
+
+\section{SYSTEM GOALS}
+\label{sec:system_goals}
+
+Based on the assignment, the implemented system was designed around the following goals:
+
+\begin{enumerate}
+    \item Correctly crawl reachable HTTP/HTTPS pages up to the requested maximum depth.
+    \item Ensure a page is fetched at most once by the system unless data is explicitly cleared.
+    \item Expose partial search results while crawl jobs are still running.
+    \item Bound work in memory through explicit queue capacity and request pacing.
+    \item Persist sufficient state so interrupted jobs can be resumed.
+    \item Offer a simple, clear localhost dashboard for crawl creation, monitoring, and search.
+    \item Keep the implementation dependency-light and explainable.
+\end{enumerate}
+
+\section{METHODOLOGY}
+\label{sec:methodology}
+
+\subsection{Development Strategy}
+
+The implementation followed a pragmatic staged approach:
+
+\begin{itemize}
+    \item First, the assignment brief and reference materials were read and translated into technical requirements.
+    \item Second, the system architecture was defined before writing the crawler logic itself.
+    \item Third, core backend capabilities were implemented: storage, URL normalization, parsing, crawling, indexing, search, and runtime job management.
+    \item Fourth, a lightweight dashboard was built to make the system observable and easy to operate locally.
+    \item Fifth, the system was validated with automated integration tests and live localhost runs.
+\end{itemize}
+
+\subsection{Reason for Choosing Python Standard Library Components}
+
+The final code intentionally uses standard-library primitives because the assignment strongly encourages native functionality. The mapping between requirements and chosen tools is summarized below:
+
+\begin{table}[H]
+\centering
+\caption{Core technologies used in the implementation}
+\begin{tabular}{|p{4cm}|p{9cm}|}
+\hline
+\textbf{Technology} & \textbf{Role in the System} \\
+\hline
+\texttt{urllib.request} & HTTP fetching and redirect-aware page retrieval \\
+\hline
+\texttt{html.parser} & Extraction of text, title, and links from HTML content \\
+\hline
+\texttt{threading} & Dispatcher thread, worker threads, and coordination primitives \\
+\hline
+\texttt{queue.Queue} & Bounded in-memory work queue for back pressure \\
+\hline
+\texttt{sqlite3} & Persistent frontier, page store, inverted index, events, and job metadata \\
+\hline
+\texttt{http.server} & Local API and dashboard hosting without external web frameworks \\
+\hline
+\end{tabular}
+\label{tab:core_tech}
+\end{table}
+
+This choice keeps the system transparent. Each major behavior is directly visible in the source code and is not delegated to a framework abstraction that would obscure the design tradeoffs.
+
+\section{SYSTEM ARCHITECTURE}
+\label{sec:architecture}
+
+\subsection{High-Level Architecture}
+
+The implemented crawler is organized into five principal modules:
+
+\begin{enumerate}
+    \item \textbf{Entry point} (\texttt{main.py})
+    \item \textbf{HTTP layer} (\texttt{crawler\_app/http\_server.py})
+    \item \textbf{Crawl manager and job runner} (\texttt{crawler\_app/manager.py})
+    \item \textbf{HTML parsing and utility logic} (\texttt{crawler\_app/parser.py}, \texttt{crawler\_app/utils.py})
+    \item \textbf{Persistent storage layer} (\texttt{crawler\_app/storage.py})
+\end{enumerate}
+
+At runtime, the overall control flow is:
+
+\begin{enumerate}
+    \item A user sends \texttt{POST /api/index} with \texttt{origin}, \texttt{max\_depth}, and capacity parameters.
+    \item A job record is created in SQLite, and the frontier is seeded with the origin URL at depth zero.
+    \item A dispatcher thread moves pending frontier items into a bounded in-memory queue.
+    \item Worker threads dequeue URLs, fetch pages, parse links and text, store the page in SQLite, and enqueue newly discovered links if depth allows.
+    \item Search requests query the already committed index directly from SQLite, even if more pages are still being processed.
+\end{enumerate}
+
+\subsection{Why SQLite Was Chosen}
+
+SQLite is a strong fit for this scope because:
+
+\begin{itemize}
+    \item it is local and requires no additional service installation,
+    \item it provides transactional guarantees,
+    \item WAL mode supports concurrent readers during writes,
+    \item it keeps the persistence story simple and explicit,
+    \item it is sufficient for a single-machine prototype with moderate write concurrency.
+\end{itemize}
+
+This design is particularly useful for the ``search while indexing'' requirement. Instead of waiting for a crawl to finish and then bulk-loading data into a separate index, every processed page becomes searchable as soon as its transaction commits.
+
+\subsection{Main Architectural Decision: Persisted Frontier + Bounded In-Memory Queue}
+
+One of the most important design choices in the system is the split between:
+
+\begin{itemize}
+    \item a \textbf{persistent frontier} stored in SQLite, and
+    \item a \textbf{bounded in-memory work queue} used only for active work.
+\end{itemize}
+
+This division solves two problems at once:
+
+\begin{enumerate}
+    \item It prevents memory growth from exploding when a page discovers many outgoing links.
+    \item It makes interruption and resume straightforward because undispatched work remains durable.
+\end{enumerate}
+
+This is a stronger single-machine design than simply storing everything in an in-memory queue and writing results opportunistically to disk.
+
+\section{DATA MODEL}
+\label{sec:data_model}
+
+The SQLite schema is central to the implementation. The key tables are summarized below.
+
+\begin{table}[H]
+\centering
+\caption{Persistent tables used by the crawler}
+\begin{tabular}{|p{3.3cm}|p{9.7cm}|}
+\hline
+\textbf{Table} & \textbf{Purpose} \\
+\hline
+\texttt{jobs} & Stores metadata about crawl jobs, including depth, queue limit, status, timestamps, and error state \\
+\hline
+\texttt{frontier} & Stores discovered URLs per job, their depth, parent URL, and lifecycle state (\texttt{pending}, \texttt{queued}, \texttt{in\_progress}, \texttt{done}, \texttt{error}, \texttt{skipped}) \\
+\hline
+\texttt{pages} & Stores globally fetched pages, response metadata, title, plain text, and fetch error state \\
+\hline
+\texttt{url\_aliases} & Maps redirected request URLs onto their canonical stored page URLs \\
+\hline
+\texttt{page\_terms} & Stores per-page term frequency and whether a term appears in the title \\
+\hline
+\texttt{page\_links} & Stores outgoing links extracted from a page \\
+\hline
+\texttt{page\_origins} & Stores how a page relates to a specific crawl job, including origin URL and discovered depth \\
+\hline
+\texttt{job\_events} & Stores timestamped operational messages for dashboard visibility \\
+\hline
+\end{tabular}
+\label{tab:schema}
+\end{table}
+
+\subsection{Why Two Kinds of Identity Are Stored}
+
+The assignment requires that search return not only a relevant page URL, but also the origin and depth under which the page was discovered. For that reason, the data model distinguishes:
+
+\begin{itemize}
+    \item \textbf{global page identity}: the canonical URL stored in \texttt{pages}, and
+    \item \textbf{job-specific discovery identity}: the \texttt{origin\_url} and \texttt{discovered\_depth} stored in \texttt{page\_origins}.
+\end{itemize}
+
+This is a crucial modeling decision because the same physical page may be reachable from multiple crawl jobs, multiple origins, or different depths. A simple page-only table would not be enough to return the required result triples.
+
+\section{IMPLEMENTATION DETAILS}
+\label{sec:implementation}
+
+\subsection{URL Normalization}
+
+All candidate URLs are normalized before insertion into the frontier. The normalization procedure:
+
+\begin{itemize}
+    \item resolves relative links using the current page URL as a base,
+    \item keeps only \texttt{http} and \texttt{https} schemes,
+    \item lowercases the scheme and hostname,
+    \item removes fragment identifiers,
+    \item normalizes default ports,
+    \item canonicalizes the path.
+\end{itemize}
+
+This reduces duplicate frontier entries caused by syntactic differences that refer to the same resource.
+
+\subsection{HTML Parsing}
+
+The parser is intentionally minimal and native. It subclasses \texttt{HTMLParser} and:
+
+\begin{itemize}
+    \item ignores \texttt{script}, \texttt{style}, and \texttt{noscript} content,
+    \item extracts title text separately,
+    \item collects body text,
+    \item collects \texttt{href} attributes from anchor tags,
+    \item normalizes discovered links to absolute URLs.
+\end{itemize}
+
+The parser returns a tuple of:
+
+\begin{itemize}
+    \item page title,
+    \item plain text content,
+    \item deduplicated outgoing links.
+\end{itemize}
+
+\subsection{Crawl Job Lifecycle}
+
+Each crawl job progresses through the following stages:
+
+\begin{enumerate}
+    \item Job creation and frontier seeding.
+    \item Dispatcher startup.
+    \item Worker thread startup.
+    \item Repeated claim-fetch-parse-store-expand cycle.
+    \item Job completion when no pending, queued, or in-progress frontier entries remain.
+\end{enumerate}
+
+The dispatcher and workers have intentionally separate responsibilities:
+
+\begin{itemize}
+    \item the dispatcher is responsible for moving work from disk into bounded memory,
+    \item workers are responsible for executing that work.
+\end{itemize}
+
+This separation keeps control flow simpler and makes queue pressure visible and measurable.
+
+\subsection{Duplicate Crawl Prevention}
+
+Preventing duplicate crawling is a core assignment requirement. In this implementation, duplicate prevention happens at two levels:
+
+\begin{enumerate}
+    \item \textbf{Persistent deduplication}: the \texttt{pages} table stores each canonical page URL only once.
+    \item \textbf{Concurrent fetch coordination}: if multiple threads encounter the same not-yet-fetched URL at nearly the same time, an in-memory coordination map ensures that only one thread performs the actual network fetch while others wait for the result.
+\end{enumerate}
+
+This design is stronger than a per-job visited set, because it avoids re-fetching a page even across multiple crawl jobs in the same persisted database.
+
+\subsection{Indexing Strategy}
+
+After a successful HTML fetch:
+
+\begin{enumerate}
+    \item the text is tokenized to lowercase alphanumeric terms,
+    \item per-term frequency is computed,
+    \item title terms are marked separately,
+    \item the page and its term frequencies are committed to SQLite,
+    \item outgoing links are stored for later depth expansion.
+\end{enumerate}
+
+Each page is committed independently. This is the key enabler for live search visibility.
+
+\subsection{Search Strategy}
+
+Search uses a simple and explainable relevance model. Query text is tokenized the same way indexed page text is tokenized. A SQL query then:
+
+\begin{itemize}
+    \item looks up matching terms in \texttt{page\_terms},
+    \item joins them with \texttt{pages} and \texttt{page\_origins},
+    \item groups results by \texttt{(relevant\_url, origin\_url, depth)},
+    \item computes a score using term frequency and title matches,
+    \item orders results by number of matched query terms, score, shallower depth, and URL.
+\end{itemize}
+
+The scoring formula is intentionally simple:
+
+\begin{Verbatim}[fontsize=\small]
+score = 4 * frequency + 20 * title_match_bonus
+\end{Verbatim}
+
+This model is not intended to compete with industrial ranking pipelines, but it is deterministic, easy to explain, and sufficient for the assignment.
+
+\subsection{HTTP API}
+
+The localhost dashboard communicates with the crawler through a small JSON API:
+
+\begin{table}[H]
+\centering
+\caption{Implemented HTTP endpoints}
+\begin{tabular}{|p{3.2cm}|p{2cm}|p{7.8cm}|}
+\hline
+\textbf{Endpoint} & \textbf{Method} & \textbf{Purpose} \\
+\hline
+\texttt{/api/index} & POST & Create and start a new crawl job \\
+\hline
+\texttt{/api/status} & GET & Return system-level summary information \\
+\hline
+\texttt{/api/jobs} & GET & List all jobs and their statuses \\
+\hline
+\texttt{/api/jobs/\{job\_id\}} & GET & Return detailed state for a specific job \\
+\hline
+\texttt{/api/jobs/\{job\_id\}/resume} & POST & Resume a resumable job \\
+\hline
+\texttt{/api/search?q=...} & GET & Search indexed content and return result triples \\
+\hline
+\end{tabular}
+\label{tab:api}
+\end{table}
+
+\subsection{Dashboard}
+
+The dashboard was implemented as a lightweight single-page front end served by the same local HTTP server. It supports:
+
+\begin{itemize}
+    \item creating crawl jobs,
+    \item listing jobs,
+    \item selecting a job to inspect detailed state,
+    \item running search queries,
+    \item seeing operational signals such as indexed page count, active workers, queue depth, and back-pressure events.
+\end{itemize}
+
+The final UI also includes a summary section explaining:
+
+\begin{itemize}
+    \item what the homework expects,
+    \item what has been implemented,
+    \item how the dashboard should be used during review.
+\end{itemize}
+
+\section{CONCURRENCY AND BACK PRESSURE}
+\label{sec:concurrency_backpressure}
+
+\subsection{Why Concurrency Matters in This Assignment}
+
+Concurrency appears in two places:
+
+\begin{itemize}
+    \item multiple URLs should be processed in parallel to use a single machine effectively,
+    \item search and indexing should be able to coexist safely.
+\end{itemize}
+
+However, uncontrolled concurrency would create correctness and resource problems. The solution therefore uses carefully bounded concurrency instead of unconstrained thread creation.
+
+\subsection{Thread Model}
+
+Each active crawl job consists of:
+
+\begin{itemize}
+    \item one dispatcher thread,
+    \item a configurable number of worker threads,
+    \item the main HTTP server thread(s) serving dashboard and search traffic.
+\end{itemize}
+
+The storage layer protects write operations with a reentrant lock and uses SQLite WAL mode to keep reads available during writes.
+
+\subsection{Back Pressure Mechanisms}
+
+Back pressure is implemented in two complementary ways:
+
+\subsubsection{Rate Limiting}
+
+A job-specific rate limiter enforces a maximum request rate. This directly addresses the assignment's suggestion that back pressure can be implemented as a maximum rate of work.
+
+\subsubsection{Bounded Queue Depth}
+
+The in-memory queue has a fixed maximum size. If the queue is full, the dispatcher does not continue loading more work from the persistent frontier. This means:
+
+\begin{itemize}
+    \item memory consumption stays bounded,
+    \item discovered work can remain on disk safely,
+    \item the dashboard can show a meaningful queue-pressure signal.
+\end{itemize}
+
+\subsection{How Search Runs While Indexing}
+
+The assignment explicitly asks for design thinking on supporting search while indexing is still active. In this implementation, that capability is achieved through:
+
+\begin{enumerate}
+    \item page-by-page transactional commits,
+    \item a durable SQL-backed inverted index,
+    \item SQLite WAL mode, which allows concurrent reads while writes are happening.
+\end{enumerate}
+
+This is substantially better than a batch-indexing design because the search endpoint does not need to wait for crawl completion. As soon as a page commit finishes, it becomes searchable.
+
+\section{PERSISTENCE AND RESUME SUPPORT}
+\label{sec:persistence_resume}
+
+Resume behavior is implemented as a first-class capability even though it was optional in the assignment.
+
+\subsection{Interruption Handling}
+
+If the process stops while jobs are still active, unfinished work is not discarded. On startup:
+
+\begin{itemize}
+    \item jobs that were previously \texttt{running} are marked \texttt{resumable},
+    \item frontier items that were \texttt{queued} or \texttt{in\_progress} are reset to \texttt{pending},
+    \item if \texttt{--auto-resume} is enabled, resumable jobs are restarted automatically.
+\end{itemize}
+
+\subsection{Why This Matters}
+
+Without persisted frontier state, interruption would require restarting the crawl from the origin. That would be wasteful, especially for deeper crawls. Resume support is therefore not just a bonus convenience; it is a meaningful improvement to the system's engineering quality.
+
+\section{RESULTS AND VALIDATION}
+\label{sec:results}
+
+\subsection{Automated Validation}
+
+The project includes integration tests that validate three important behaviors:
+
+\begin{enumerate}
+    \item crawl completion and indexed search results,
+    \item live search visibility while a crawl is still running,
+    \item resuming interrupted jobs.
+\end{enumerate}
+
+The executed test command was:
+
+\begin{Verbatim}[fontsize=\small]
+python -m unittest discover -s tests -v
+\end{Verbatim}
+
+The test suite passed successfully. This is important because it verifies not only nominal crawling behavior but also the core architectural requirements around concurrency and resumability.
+
+\subsection{Live Localhost Validation}
+
+In addition to automated tests, the system was run interactively on localhost. The following setup was used:
+
+\begin{Verbatim}[fontsize=\small]
+python -m http.server 9001 -d sample_site
+python main.py --host 127.0.0.1 --port 8080 --auto-resume
+\end{Verbatim}
+
+During live validation:
+
+\begin{itemize}
+    \item the sample site was served at \url{http://127.0.0.1:9001/index.html},
+    \item the dashboard and API were served at \url{http://127.0.0.1:8080},
+    \item a crawl job with maximum depth 2 completed successfully,
+    \item three pages were indexed,
+    \item the query \texttt{python} correctly returned \texttt{page-a.html} with origin \texttt{index.html} and depth 1.
+\end{itemize}
+
+\subsection{Observed Improvement During Validation}
+
+During live testing, a duplicate result issue was observed in search responses when the same page had been associated with multiple crawl jobs that shared the same origin and depth. The issue was traced to grouping behavior in the search SQL query. The query was then corrected to group results by \texttt{(relevant\_url, origin\_url, depth)} rather than by crawl job identity. This debugging step improved both correctness and presentation quality.
+
+\subsection{Example Result}
+
+A representative search response after the fix was:
+
+\begin{Verbatim}[fontsize=\small]
+query: python
+result_count: 1
+relevant_url: http://127.0.0.1:9001/page-a.html
+origin_url:   http://127.0.0.1:9001/index.html
+depth:        1
+score:        64
+\end{Verbatim}
+
+This output is consistent with the assignment requirement that search returns the relevant page together with the origin and discovery depth that explain how the page entered the index.
+
+\section{DISCUSSION}
+\label{sec:discussion}
+
+\subsection{Strengths of the Final Solution}
+
+The strongest aspects of the implementation are the following:
+
+\begin{itemize}
+    \item \textbf{Requirement alignment}: the solution directly addresses the assignment's core demands rather than building unrelated extra features.
+    \item \textbf{Native implementation}: the system stays faithful to the prompt's preference for language-native functionality.
+    \item \textbf{Operational clarity}: queue pressure, worker activity, job events, and search results are visible through a straightforward dashboard.
+    \item \textbf{Correctness under concurrency}: duplicate fetch coordination and WAL-backed incremental indexing make the system robust enough for the homework scope.
+    \item \textbf{Persistence}: the resume behavior significantly improves practical usability.
+\end{itemize}
+
+\subsection{Tradeoffs and Limitations}
+
+The current solution is intentionally scoped. Several limitations are acceptable for a homework deliverable but would matter in a larger system:
+
+\begin{itemize}
+    \item \textbf{No robots.txt handling}: the crawler does not yet enforce web politeness policies.
+    \item \textbf{Simple ranking}: the relevance model is intentionally basic.
+    \item \textbf{Single-machine ceiling}: SQLite is appropriate here, but not the right long-term choice for very large, write-heavy deployments.
+    \item \textbf{HTML-only focus}: non-HTML content is detected but not richly processed.
+    \item \textbf{No recrawl scheduling}: a URL is not revisited unless data is reset.
+\end{itemize}
+
+\subsection{Why the Chosen Scope Is Appropriate}
+
+The assignment explicitly emphasizes thoughtful code that works within reasonable assumptions over an expansive but incomplete system. The final implementation reflects that advice. Instead of adding distributed components, advanced ranking heuristics, or an overbuilt microservice architecture, the system focuses on:
+
+\begin{itemize}
+    \item correctness,
+    \item bounded resource usage,
+    \item concurrency-aware indexing,
+    \item observability,
+    \item and local reproducibility.
+\end{itemize}
+
+That tradeoff is, in my view, the right one for a 3--5 hour assignment with architectural evaluation criteria.
+
+\section{PRODUCTION RECOMMENDATIONS}
+\label{sec:production_recommendations}
+
+Although the project is intentionally single-machine and localhost-oriented, several next steps would be appropriate for productionization.
+
+\subsection{Separate Fetch, Index, and Query Tiers}
+
+The first major recommendation is to split the current unified process into separate fetch, index, and query responsibilities:
+
+\begin{itemize}
+    \item fetch workers retrieve and normalize raw page documents,
+    \item index workers transform documents into search-ready postings,
+    \item query nodes serve read traffic against replicated search infrastructure.
+\end{itemize}
+
+This would reduce write-read interference, improve fault isolation, and let each subsystem scale according to its own bottleneck.
+
+\subsection{Adopt Stronger Crawl Policy Controls}
+
+A production crawler should support:
+
+\begin{itemize}
+    \item \texttt{robots.txt} awareness,
+    \item per-host politeness budgets,
+    \item retry budgets and exponential backoff,
+    \item page freshness and recrawl policies,
+    \item abuse detection and monitoring.
+\end{itemize}
+
+\subsection{Move Beyond SQLite for Search Scale}
+
+SQLite is excellent for this project, but a production environment should move toward:
+
+\begin{itemize}
+    \item a durable queue or log for fetched documents,
+    \item a distributed index store such as OpenSearch or Elasticsearch,
+    \item or a dedicated custom inverted-index service.
+\end{itemize}
+
+This would make it possible to add ranking signals such as phrase matching, recency, anchor text, and authority-based scoring.
+
+\section{CONCLUSION}
+
+The objective of this homework was to build a web crawler and search engine that satisfies both algorithmic and architectural requirements: crawl from an origin URL up to depth \texttt{k}, avoid crawling the same page twice, apply back pressure, provide live search over indexed content, and expose operational state through a UI or CLI. The final implementation achieves these goals with a clear, dependency-light architecture built almost entirely on Python standard-library components.
+
+More importantly, the project addresses the assignment's deeper systems question about concurrent indexing and search in a concrete and defensible way. Instead of deferring search until the crawl is finished, the solution writes pages transactionally into a SQLite-backed inverted index and serves search directly from that live store. Together with the persisted frontier, bounded in-memory queue, duplicate-fetch coordination, and resume support, the resulting system is both practically useful and architecturally sensible for a single-machine homework deliverable.
+
+In summary, the project satisfies the required functionality, demonstrates careful attention to detail, and remains faithful to the design constraints stated in the prompt. It is therefore a complete and technically coherent submission for the assignment.
+
+\begin{thebibliography}{9}
+\bibitem{pythonurllib}
+Python Software Foundation. \textit{urllib.request --- Extensible library for opening URLs}. \url{https://docs.python.org/3/library/urllib.request.html}
+
+\bibitem{pythonhtmlparser}
+Python Software Foundation. \textit{html.parser --- Simple HTML and XHTML parser}. \url{https://docs.python.org/3/library/html.parser.html}
+
+\bibitem{pythonsqlite}
+Python Software Foundation. \textit{sqlite3 --- DB-API 2.0 interface for SQLite databases}. \url{https://docs.python.org/3/library/sqlite3.html}
+
+\bibitem{pythonhttpserver}
+Python Software Foundation. \textit{http.server --- HTTP servers}. \url{https://docs.python.org/3/library/http.server.html}
+
+\bibitem{sqlitewal}
+SQLite Documentation. \textit{Write-Ahead Logging}. \url{https://www.sqlite.org/wal.html}
+
+\bibitem{assignment}
+Istanbul Technical University, BLG 483E Homework 1 brief and supporting course materials provided with the project package.
+\end{thebibliography}
+
+\end{document}

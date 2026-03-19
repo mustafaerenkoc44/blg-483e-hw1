@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>BLG483E Crawler Dashboard</title>
+    <link rel="stylesheet" href="/static/styles.css?v=2" />
+  </head>
+  <body>
+    <main class="page">
+      <section class="hero">
+        <div class="hero-copy">
+          <p class="eyebrow">BLG 483E / HW1</p>
+          <h1>Concurrent Crawler Dashboard</h1>
+          <p class="lede">
+            A single-machine crawler that indexes pages incrementally, exposes search while crawling
+            is still active, and makes queue pressure visible in real time.
+          </p>
+          <div class="hero-tags">
+            <span>Index(origin, k)</span>
+            <span>Live Search</span>
+            <span>Back Pressure</span>
+            <span>System Visibility</span>
+            <span>Resume Support</span>
+          </div>
+        </div>
+        <div class="hero-metrics" id="summaryCards"></div>
+      </section>
+
+      <section class="overview-grid">
+        <article class="panel info-panel">
+          <p class="eyebrow">Assignment</p>
+          <h2>What The Homework Asks</h2>
+          <p class="info-copy">
+            Build a crawler that starts from an origin URL, crawls links up to depth
+            <code>k</code>, never crawls the same page twice, and controls load with back pressure.
+          </p>
+          <p class="info-copy">
+            Search must return <code>(relevant_url, origin_url, depth)</code> while indexing is still
+            running, and the UI or CLI must show progress, queue depth, and throttling state.
+          </p>
+        </article>
+
+        <article class="panel info-panel">
+          <p class="eyebrow">What We Built</p>
+          <h2>Current Implementation</h2>
+          <p class="info-copy">
+            This solution uses Python standard-library components:
+            <code>urllib</code>, <code>html.parser</code>, <code>threading</code>,
+            <code>queue.Queue</code>, <code>sqlite3</code>, and <code>http.server</code>.
+          </p>
+          <p class="info-copy">
+            The crawler writes page-by-page into SQLite, so new results become searchable
+            immediately instead of waiting for the whole crawl to finish.
+          </p>
+        </article>
+
+        <article class="panel info-panel">
+          <p class="eyebrow">What To Do Here</p>
+          <h2>How To Use This Page</h2>
+          <p class="info-copy">
+            Start a crawl job, inspect the selected job panel, then run searches such as
+            <code>python</code>, <code>relevance</code>, or <code>concurrency</code>.
+          </p>
+          <p class="info-copy">
+            The sample site on <code>127.0.0.1:9001</code> is provided for deterministic localhost
+            testing, but any reachable HTTP or HTTPS origin URL can be used.
+          </p>
+        </article>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <h2>Create Crawl Job</h2>
+          <p>These parameters map directly to the assignment constraints.</p>
+        </div>
+        <form id="crawlForm" class="grid-form">
+          <label>
+            Origin URL
+            <input type="url" name="origin" placeholder="http://127.0.0.1:9001/index.html" required />
+          </label>
+          <label>
+            Max Depth
+            <input type="number" name="max_depth" min="0" value="2" required />
+          </label>
+          <label>
+            Workers
+            <input type="number" name="worker_count" min="1" value="4" required />
+          </label>
+          <label>
+            Rate Limit (req/s)
+            <input type="number" name="rate_limit" min="0.1" step="0.1" value="3" required />
+          </label>
+          <label>
+            Queue Limit
+            <input type="number" name="queue_limit" min="1" value="64" required />
+          </label>
+          <button type="submit" class="primary">Start Indexing</button>
+        </form>
+        <p class="feedback" id="crawlFeedback"></p>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <h2>Jobs</h2>
+          <p>Running, completed, and resumable crawl jobs.</p>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Job</th>
+                <th>Status</th>
+                <th>Origin</th>
+                <th>Depth</th>
+                <th>Indexed</th>
+                <th>Queue</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody id="jobsBody"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <h2>Selected Job</h2>
+          <p>Queue depth, back pressure, worker activity, timestamps, and live events.</p>
+        </div>
+        <div id="jobDetail" class="job-detail empty">
+          Select a job to inspect its current state.
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <h2>Search</h2>
+          <p>Results appear as soon as pages commit into the index.</p>
+        </div>
+        <form id="searchForm" class="search-row">
+          <input type="search" name="query" placeholder="python crawler concurrency" required />
+          <input type="number" name="limit" min="1" max="100" value="20" />
+          <button type="submit" class="primary">Search</button>
+        </form>
+        <div id="searchMeta" class="meta"></div>
+        <div id="results" class="results"></div>
+      </section>
+    </main>
+
+    <script src="/static/app.js?v=2" defer></script>
+  </body>
+</html>
