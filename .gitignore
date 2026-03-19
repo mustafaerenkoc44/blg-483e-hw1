@@ -1,6 +1,7 @@
 __pycache__/
 *.pyc
 *.pyo
+tests/.tmp/
 
 data/
 *.db
