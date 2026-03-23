@@ -446,6 +446,24 @@ class CrawlerManager:
             "result_count": len(results),
         }
 
+    def search_quiz_compat(self, query: str, limit: int = 25, sort_by: str = "relevance") -> dict[str, Any]:
+        """Expose the quiz-compatible query contract.
+
+        The quiz references GET /search?query=<word>&sortBy=relevance on port
+        3600 and expects the returned score to match a documented flat-file
+        formula. This method keeps that compatibility separate from the richer
+        dashboard API so the original homework solution remains intact.
+        """
+        terms = tokenize(query)
+        results = self.storage.search_quiz_compat(terms, limit)
+        return {
+            "query": query,
+            "terms": terms,
+            "sortBy": sort_by,
+            "results": results,
+            "result_count": len(results),
+        }
+
     def list_jobs(self) -> list[dict[str, Any]]:
         return [self.get_job_status(str(job["job_id"])) for job in self.storage.list_jobs()]
 

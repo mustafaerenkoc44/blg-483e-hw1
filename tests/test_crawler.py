@@ -76,7 +76,7 @@ class CrawlerIntegrationTests(unittest.TestCase):
             <html>
               <head><title>Root Page</title></head>
               <body>
-                rootterm concurrency queue
+                rootterm concurrency queue relevance
                 <a href="/page-a.html">A</a>
                 <a href="/slow.html">Slow</a>
               </body>
@@ -89,7 +89,7 @@ class CrawlerIntegrationTests(unittest.TestCase):
             <html>
               <head><title>Python Crawler</title></head>
               <body>
-                python urllib sqlite parser ranking
+                python urllib sqlite parser ranking relevance
               </body>
             </html>
             """,
@@ -100,7 +100,7 @@ class CrawlerIntegrationTests(unittest.TestCase):
             <html>
               <head><title>Delayed Relevance</title></head>
               <body>
-                delayedtoken relevance depth visibility
+                delayedtoken relevance depth visibility relevance
               </body>
             </html>
             """,
@@ -173,6 +173,55 @@ class CrawlerIntegrationTests(unittest.TestCase):
 
         resumed_results = resumed_manager.search("delayedtoken", limit=10)["results"]
         self.assertTrue(any(row["relevant_url"].endswith("/slow.html") for row in resumed_results))
+
+    def test_quiz_compat_export_and_relevance_formula(self):
+        origin = self._make_site()
+        data_dir = self._tempdir()
+        manager = self._manager(data_dir)
+        job = manager.start_job(origin, 2, worker_count=2, rate_limit=20, queue_limit=8)
+        job_id = job["job_id"]
+
+        finished = wait_until(
+            lambda: manager.get_job_status(job_id)["status"] == "completed",
+            timeout=8,
+        )
+        self.assertTrue(finished, "crawl job did not complete in time")
+
+        compat_file = Path(data_dir) / "storage" / "p.data"
+        self.assertTrue(compat_file.exists(), "compat storage file was not exported")
+
+        relevance_lines = [
+            line.strip()
+            for line in compat_file.read_text(encoding="utf-8").splitlines()
+            if line.startswith("relevance ")
+        ]
+        self.assertEqual(len(relevance_lines), 3)
+
+        compat_results = manager.search_quiz_compat("relevance", limit=10)["results"]
+        self.assertEqual(compat_results[0]["frequency"], 3)
+        self.assertEqual(compat_results[0]["depth"], 1)
+        self.assertEqual(compat_results[0]["relevance_score"], 1025)
+
+    def test_quiz_compat_dedupes_repeated_crawls(self):
+        origin = self._make_site()
+        data_dir = self._tempdir()
+        manager = self._manager(data_dir)
+
+        first_job = manager.start_job(origin, 2, worker_count=2, rate_limit=20, queue_limit=8)
+        second_job = manager.start_job(origin, 2, worker_count=2, rate_limit=20, queue_limit=8)
+
+        self.assertTrue(
+            wait_until(lambda: manager.get_job_status(first_job["job_id"])["status"] == "completed", timeout=8)
+        )
+        self.assertTrue(
+            wait_until(lambda: manager.get_job_status(second_job["job_id"])["status"] == "completed", timeout=8)
+        )
+
+        compat_results = manager.search_quiz_compat("relevance", limit=10)["results"]
+        top_result = compat_results[0]
+        self.assertEqual(top_result["url"].split("/")[-1], "slow.html")
+        self.assertEqual(top_result["frequency"], 3)
+        self.assertEqual(top_result["relevance_score"], 1025)
 
 
 if __name__ == "__main__":

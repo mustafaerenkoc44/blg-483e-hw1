@@ -16,6 +16,7 @@ The implementation also includes a localhost dashboard for starting jobs, observ
 - [Production recommendations](recommendation.md)
 - [LaTeX report source](homework_report.tex)
 - [PDF report](blg_483e_hw1_report.pdf)
+- Quiz-compatible raw storage export at `data/storage/p.data`
 
 ## Why This Design
 
@@ -102,13 +103,13 @@ python -m http.server 9001 -d sample_site
 2. Start the crawler dashboard:
 
 ```bash
-python main.py --host 127.0.0.1 --port 8080 --auto-resume
+python main.py --host 127.0.0.1 --port 3600 --auto-resume
 ```
 
 3. Open the UI:
 
 ```text
-http://127.0.0.1:8080
+http://127.0.0.1:3600
 ```
 
 4. Suggested demo crawl:
@@ -150,6 +151,24 @@ Content-Type: application/json
 
 ```http
 GET /api/search?q=python&limit=20
+```
+
+### Quiz-Compatible Search
+
+```http
+GET /search?query=relevance&sortBy=relevance
+```
+
+This endpoint uses the quiz scoring formula directly:
+
+```text
+score = (frequency * 10) + 1000 - (depth * 5)
+```
+
+The raw line source for those scores is exported to:
+
+```text
+data/storage/p.data
 ```
 
 ### System State

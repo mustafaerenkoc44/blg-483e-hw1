@@ -11,7 +11,7 @@ def parse_args() -> argparse.Namespace:
     """Parse the small set of runtime flags exposed by the local server."""
     parser = argparse.ArgumentParser(description="Localhost crawler homework solution")
     parser.add_argument("--host", default="127.0.0.1", help="HTTP host to bind")
-    parser.add_argument("--port", default=8080, type=int, help="HTTP port to bind")
+    parser.add_argument("--port", default=3600, type=int, help="HTTP port to bind")
     parser.add_argument(
         "--data-dir",
         default=os.path.join(os.getcwd(), "data"),

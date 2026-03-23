@@ -69,6 +69,14 @@ class CrawlerRequestHandler(BaseHTTPRequestHandler):
             self._send_json(self.server.manager.search(query, limit=limit))
             return
 
+        if path == "/search":
+            params = parse_qs(parsed.query)
+            query = params.get("query", params.get("q", [""]))[0]
+            limit = int(params.get("limit", ["25"])[0])
+            sort_by = params.get("sortBy", ["relevance"])[0]
+            self._send_json(self.server.manager.search_quiz_compat(query, limit=limit, sort_by=sort_by))
+            return
+
         self._send_json({"error": "not found"}, status=HTTPStatus.NOT_FOUND)
 
     def do_POST(self) -> None:  # noqa: N802

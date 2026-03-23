@@ -20,9 +20,13 @@ class Storage:
     def __init__(self, db_path: str) -> None:
         self.db_path = db_path
         os.makedirs(os.path.dirname(db_path), exist_ok=True)
+        self.compat_storage_dir = os.path.join(os.path.dirname(db_path), "storage")
+        self.compat_storage_path = os.path.join(self.compat_storage_dir, "p.data")
+        os.makedirs(self.compat_storage_dir, exist_ok=True)
         self._local = threading.local()
         self._write_lock = threading.RLock()
         self._init_schema()
+        self.refresh_compat_storage()
 
     def _conn(self) -> sqlite3.Connection:
         connection = getattr(self._local, "connection", None)
@@ -149,6 +153,38 @@ class Storage:
                 """
             )
             conn.commit()
+
+    def refresh_compat_storage(self) -> None:
+        """Materialize the quiz-friendly raw storage file from SQLite state.
+
+        The project's primary storage is SQLite, but the quiz expects a flat
+        file at data/storage/p.data where each line has:
+        word url origin depth frequency
+        Exporting that file from the canonical index keeps the system
+        internally consistent while still matching the quiz format exactly.
+        """
+        with self._write_lock:
+            conn = self._conn()
+            rows = conn.execute(
+                """
+                SELECT
+                    pt.term AS word,
+                    p.url AS url,
+                    po.origin_url AS origin_url,
+                    po.discovered_depth AS depth,
+                    MAX(pt.frequency) AS frequency
+                FROM page_terms pt
+                JOIN pages p ON p.page_id = pt.page_id
+                JOIN page_origins po ON po.page_id = pt.page_id
+                GROUP BY pt.term, p.url, po.origin_url, po.discovered_depth
+                ORDER BY pt.term ASC, p.url ASC, po.origin_url ASC, po.discovered_depth ASC
+                """
+            ).fetchall()
+            with open(self.compat_storage_path, "w", encoding="utf-8") as handle:
+                for row in rows:
+                    handle.write(
+                        f"{row['word']} {row['url']} {row['origin_url']} {int(row['depth'])} {int(row['frequency'])}\n"
+                    )
 
     def create_job(
         self,
@@ -580,9 +616,10 @@ class Storage:
                     SET discovered_depth = ?, discovered_at = ?
                     WHERE page_id = ? AND job_id = ?
                     """,
-                    (depth, now, page_id, job_id),
+                        (depth, now, page_id, job_id),
                 )
             conn.commit()
+            self.refresh_compat_storage()
 
     def get_page_links(self, url: str) -> list[str]:
         page = self.get_page(url)
@@ -691,6 +728,49 @@ class Storage:
             WHERE pt.term IN ({placeholders})
             GROUP BY p.url, p.title, po.origin_url, po.discovered_depth
             ORDER BY matched_terms DESC, score DESC, depth ASC, relevant_url ASC
+            LIMIT ?
+        """
+        rows = self._conn().execute(sql, (*query_terms, limit)).fetchall()
+        return [dict(row) for row in rows]
+
+    def search_quiz_compat(self, query_terms: list[str], limit: int) -> list[dict[str, Any]]:
+        """Return results using the quiz's explicit relevance formula.
+
+        Quiz formula:
+            score = (frequency * 10) + 1000 - (depth * 5)
+
+        This endpoint intentionally exposes frequency and depth directly so the
+        quiz answer can be audited against raw p.data lines.
+        """
+        if not query_terms:
+            return []
+
+        placeholders = ", ".join("?" for _ in query_terms)
+        exact_bonus = 1000
+        sql = f"""
+            WITH deduped_matches AS (
+                SELECT
+                    pt.term AS term,
+                    p.url AS url,
+                    po.origin_url AS origin,
+                    po.discovered_depth AS depth,
+                    MAX(pt.frequency) AS frequency
+                FROM page_terms pt
+                JOIN pages p ON p.page_id = pt.page_id
+                JOIN page_origins po ON po.page_id = pt.page_id
+                WHERE pt.term IN ({placeholders})
+                GROUP BY pt.term, p.url, po.origin_url, po.discovered_depth
+            )
+            SELECT
+                url,
+                origin,
+                depth,
+                SUM(frequency) AS frequency,
+                SUM(frequency * 10 + {exact_bonus}) - (depth * 5) AS relevance_score,
+                COUNT(DISTINCT term) AS matched_terms
+            FROM deduped_matches
+            GROUP BY url, origin, depth
+            ORDER BY matched_terms DESC, relevance_score DESC, url ASC, origin ASC
             LIMIT ?
         """
         rows = self._conn().execute(sql, (*query_terms, limit)).fetchall()
