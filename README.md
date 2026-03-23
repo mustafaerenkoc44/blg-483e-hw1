@@ -15,7 +15,7 @@ The implementation also includes a localhost dashboard for starting jobs, observ
 - [Product PRD](product_prd.md)
 - [Production recommendations](recommendation.md)
 - [LaTeX report source](homework_report.tex)
-- [PDF report](blg_483e_hw1_report.pdf)
+- [PDF report](150190805.pdf)
 - Quiz-compatible raw storage export at `data/storage/p.data`
 
 ## Why This Design
@@ -87,7 +87,7 @@ Unfinished jobs remain persisted on disk. On restart, interrupted jobs can be re
 |-- product_prd.md
 |-- recommendation.md
 |-- homework_report.tex
-`-- blg_483e_hw1_report.pdf
+`-- 150190805.pdf
 ```
 
 ## Run Locally

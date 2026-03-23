@@ -393,6 +393,29 @@ score = 4 * frequency + 20 * title_match_bonus
 
 This model is not intended to compete with industrial ranking pipelines, but it is deterministic, easy to explain, and sufficient for the assignment.
 
+\subsection{Quiz Compatibility Layer}
+
+After the main crawler was completed, the project was additionally aligned with a course quiz that expected two concrete interfaces:
+
+\begin{itemize}
+    \item a raw storage file at \texttt{data/storage/p.data},
+    \item a search endpoint exposed as \texttt{GET /search?query=... \& sortBy=relevance} on port \texttt{3600}.
+\end{itemize}
+
+The core system still stores its authoritative index in SQLite. Therefore, instead of replacing the primary architecture, a compatibility export was added that materializes flat-file rows directly from the canonical index in the following format:
+
+\begin{Verbatim}[fontsize=\small]
+word url origin depth frequency
+\end{Verbatim}
+
+In parallel, a quiz-specific search route was introduced so that the returned score matches the quiz formula exactly:
+
+\begin{Verbatim}[fontsize=\small]
+score = (frequency * 10) + 1000 - (depth * 5)
+\end{Verbatim}
+
+This compatibility layer is intentionally separate from the richer dashboard search API. As a result, the original homework design remains intact while the repository also satisfies the quiz workflow exactly.
+
 \subsection{HTTP API}
 
 The localhost dashboard communicates with the crawler through a small JSON API:
@@ -415,6 +438,8 @@ The localhost dashboard communicates with the crawler through a small JSON API:
 \texttt{/api/jobs/\{job\_id\}/resume} & POST & Resume a resumable job \\
 \hline
 \texttt{/api/search?q=...} & GET & Search indexed content and return result triples \\
+\hline
+\texttt{/search?query=... \& sortBy=relevance} & GET & Quiz-compatible search using the exported flat-file scoring formula \\
 \hline
 \end{tabular}
 \label{tab:api}
@@ -525,7 +550,8 @@ The project includes integration tests that validate three important behaviors:
 \begin{enumerate}
     \item crawl completion and indexed search results,
     \item live search visibility while a crawl is still running,
-    \item resuming interrupted jobs.
+    \item resuming interrupted jobs,
+    \item quiz-compatible raw export and exact relevance-score calculation.
 \end{enumerate}
 
 The executed test command was:
@@ -542,17 +568,19 @@ In addition to automated tests, the system was run interactively on localhost. T
 
 \begin{Verbatim}[fontsize=\small]
 python -m http.server 9001 -d sample_site
-python main.py --host 127.0.0.1 --port 8080 --auto-resume
+python main.py --host 127.0.0.1 --port 3600 --auto-resume
 \end{Verbatim}
 
 During live validation:
 
 \begin{itemize}
     \item the sample site was served at \url{http://127.0.0.1:9001/index.html},
-    \item the dashboard and API were served at \url{http://127.0.0.1:8080},
+    \item the dashboard and API were served at \url{http://127.0.0.1:3600},
     \item a crawl job with maximum depth 2 completed successfully,
     \item three pages were indexed,
-    \item the query \texttt{python} correctly returned \texttt{page-a.html} with origin \texttt{index.html} and depth 1.
+    \item the query \texttt{python} correctly returned \texttt{page-a.html} with origin \texttt{index.html} and depth 1,
+    \item the compatibility export file \texttt{data/storage/p.data} was generated successfully,
+    \item the compatibility query \texttt{/search?query=relevance\&sortBy=relevance} returned \texttt{page-b.html} with \texttt{relevance\_score = 1025}.
 \end{itemize}
 
 \subsection{Observed Improvement During Validation}
@@ -573,6 +601,26 @@ score:        64
 \end{Verbatim}
 
 This output is consistent with the assignment requirement that search returns the relevant page together with the origin and discovery depth that explain how the page entered the index.
+
+\subsection{Quiz Validation Example}
+
+The quiz compatibility path was also verified directly against the exported flat file. The chosen word was \texttt{relevance}, which appeared on three distinct URLs:
+
+\begin{Verbatim}[fontsize=\small]
+relevance http://127.0.0.1:9001/index.html  http://127.0.0.1:9001/index.html 0 1
+relevance http://127.0.0.1:9001/page-a.html http://127.0.0.1:9001/index.html 1 1
+relevance http://127.0.0.1:9001/page-b.html http://127.0.0.1:9001/index.html 1 3
+\end{Verbatim}
+
+Applying the quiz formula gives:
+
+\begin{itemize}
+    \item \texttt{index.html}: $(1 \times 10) + 1000 - (0 \times 5) = 1010$
+    \item \texttt{page-a.html}: $(1 \times 10) + 1000 - (1 \times 5) = 1005$
+    \item \texttt{page-b.html}: $(3 \times 10) + 1000 - (1 \times 5) = 1025$
+\end{itemize}
+
+The top API result from \texttt{GET /search?query=relevance\&sortBy=relevance} was \texttt{page-b.html} with \texttt{relevance\_score = 1025}, which matches the manual calculation exactly.
 
 \section{DISCUSSION}
 \label{sec:discussion}
